@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "VFS Slot Checker",
+  "version": "2.1",
+  "description": "Checks VFS appointment slots and alerts via Telegram. Toggle on any page.",
+  "permissions": ["storage", "scripting", "activeTab", "tabs", "notifications"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "src/background.ts"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "VFS Slot Checker",
+    "default_icon": {
+      "48": "vfs_telegram_icon_48_disabled.png"
+    }
+  },
+  "icons": {
+    "48": "vfs_telegram_icon_48.png"
+  }
+}

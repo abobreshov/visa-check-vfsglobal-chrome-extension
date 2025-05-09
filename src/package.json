@@ -1,0 +1,28 @@
+{
+  "name": "vfs-slot-checker",
+  "version": "2.1.0",
+  "type": "module",
+  "description": "Chrome extension that checks VFS appointment slots and alerts via Telegram",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "build:beta": "tsc && vite build --mode beta",
+    "preview": "vite preview"
+  },
+  "keywords": [
+    "chrome-extension",
+    "visa",
+    "appointment",
+    "vfs-global"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@crxjs/vite-plugin": "^1.0.14",
+    "@types/chrome": "^0.0.321",
+    "@types/node": "^22.15.17",
+    "dotenv": "^16.5.0",
+    "typescript": "^5.8.3",
+    "vite": "^2.9.18"
+  }
+}
