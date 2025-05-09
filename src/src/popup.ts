@@ -1,79 +1,166 @@
 /**
  * Popup UI for controlling the extension
  */
-document.addEventListener('DOMContentLoaded', async () => {
-  const statusEl = document.getElementById('status');
-  const toggleBtn = document.getElementById('toggleBtn');
-  if (!statusEl || !toggleBtn) return;
 
-  // Get the active tab
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab.id) return;
+/**
+ * Class to handle popup UI and interactions
+ */
+class PopupManager {
+  private statusEl: HTMLElement | null;
+  private toggleBtn: HTMLElement | null;
+  private currentTab: chrome.tabs.Tab | null = null;
+
+  constructor() {
+    this.statusEl = document.getElementById('status');
+    this.toggleBtn = document.getElementById('toggleBtn');
+  }
 
   /**
-   * Updates the extension icon
+   * Initialize the popup
    */
-  const setIcon = (enabled: boolean): void => {
+  public async init(): Promise<void> {
+    if (!this.statusEl || !this.toggleBtn) {
+      console.error("Required UI elements not found");
+      return;
+    }
+
+    try {
+      // Get the active tab
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      this.currentTab = tabs[0];
+
+      if (!this.currentTab?.id) {
+        console.error("No active tab found");
+        return;
+      }
+
+      // Set up event listeners
+      this.setupEventListeners();
+
+      // Initialize UI state
+      await this.initializeState();
+    } catch (error) {
+      console.error("Error initializing popup:", error);
+    }
+  }
+
+  /**
+   * Set up event listeners for UI elements
+   */
+  private setupEventListeners(): void {
+    if (!this.toggleBtn) return;
+
+    this.toggleBtn.addEventListener('click', async () => {
+      await this.toggleExtension();
+    });
+  }
+
+  /**
+   * Initialize UI state based on storage and content script state
+   */
+  private async initializeState(): Promise<void> {
+    if (!this.currentTab?.id) return;
+
+    try {
+      // Inject content script if not already present
+      await chrome.scripting.executeScript({
+        target: { tabId: this.currentTab.id },
+        files: ['src/content.js']
+      });
+
+      // Get current state from storage
+      const data = await this.getStorageData("enabled");
+      const isEnabled = !!data.enabled;
+
+      // Update UI to match current state
+      this.updateUI(isEnabled);
+
+      // Make sure content script is aware of the state
+      await this.sendMessageToContentScript({
+        type: "toggle-checker",
+        enabled: isEnabled
+      });
+    } catch (error) {
+      console.error("Error initializing state:", error);
+      this.updateUI(false);
+    }
+  }
+
+  /**
+   * Toggle the extension state
+   */
+  private async toggleExtension(): Promise<void> {
+    if (!this.currentTab?.id || !this.toggleBtn) return;
+
+    try {
+      // Determine desired state based on button text
+      const enable = this.toggleBtn.textContent?.includes('Enable') || false;
+
+      // Update UI immediately for better responsiveness
+      this.updateUI(enable);
+
+      // Update storage
+      await chrome.storage.local.set({ enabled: enable });
+
+      // Notify content script of state change
+      await this.sendMessageToContentScript({
+        type: "toggle-checker",
+        enabled: enable
+      });
+
+      // Reload the page to apply changes if enabling
+      if (enable) {
+        await chrome.tabs.reload(this.currentTab.id);
+      }
+    } catch (error) {
+      console.error("Error toggling extension:", error);
+    }
+  }
+
+  /**
+   * Update icon and UI elements to reflect the current state
+   */
+  private updateUI(enabled: boolean): void {
+    if (!this.statusEl || !this.toggleBtn || !this.currentTab?.id) return;
+
+    // Update UI text
+    this.statusEl.textContent = enabled ? '✅ Enabled' : '⛔ Disabled';
+    this.toggleBtn.textContent = enabled ? 'Disable Checker' : 'Enable Checker';
+
+    // Update icon
     chrome.action.setIcon({
-      tabId: tab.id!,
+      tabId: this.currentTab.id,
       path: enabled ? 'vfs_telegram_icon_48_enabled.png' : 'vfs_telegram_icon_48_disabled.png'
     });
-  };
+  }
 
   /**
-   * Updates the UI to reflect the current state
+   * Send a message to the content script
    */
-  const updateUI = (running: boolean): void => {
-    if (statusEl) statusEl.textContent = running ? '✅ Enabled' : '⛔ Disabled';
-    if (toggleBtn) toggleBtn.textContent = running ? 'Disable Checker' : 'Enable Checker';
-    setIcon(running);
-  };
+  private async sendMessageToContentScript(message: any): Promise<any> {
+    if (!this.currentTab?.id) return;
 
-  // Inject content script
-  await chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    files: ['src/content.js']
-  });
-
-  // Check if the extension is already running
-  chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    func: () => {
-      if (typeof (window as any).__VFS_RUNNING__ === 'undefined') {
-        (window as any).__VFS_RUNNING__ = true;
-      }
-      return (window as any).__VFS_RUNNING__;
-    }
-  }, (results) => {
-    const isRunning = results?.[0]?.result === true;
-    updateUI(isRunning);
-    
-    // Update storage with current state
-    chrome.storage.local.set({ enabled: isRunning });
-  });
-
-  // Handle toggle button click
-  toggleBtn.addEventListener('click', () => {
-    const enable = toggleBtn.textContent?.includes('Enable') || false;
-    
-    chrome.scripting.executeScript({
-      target: { tabId: tab.id! },
-      func: (enable) => {
-        (window as any).__VFS_RUNNING__ = enable;
-        return enable;
-      },
-      args: [enable]
-    }, (results) => {
-      const nowRunning = results?.[0]?.result === true;
-      updateUI(nowRunning);
-      
-      // Update storage with new state
-      chrome.storage.local.set({ enabled: nowRunning });
-      
-      // Reload the page to apply changes
-      if (nowRunning) {
-        chrome.tabs.reload(tab.id!);
-      }
+    return new Promise((resolve) => {
+      chrome.tabs.sendMessage(this.currentTab!.id!, message, (response) => {
+        resolve(response);
+      });
     });
-  });
+  }
+
+  /**
+   * Helper function to get Chrome storage data as a Promise
+   */
+  private getStorageData(key: string): Promise<any> {
+    return new Promise(resolve => {
+      chrome.storage.local.get(key, (data) => {
+        resolve(data);
+      });
+    });
+  }
+}
+
+// Initialize popup when DOM is ready
+document.addEventListener('DOMContentLoaded', async () => {
+  const popupManager = new PopupManager();
+  await popupManager.init();
 });

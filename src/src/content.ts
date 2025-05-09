@@ -1,96 +1,178 @@
 import { APP_CONFIG } from './config';
-import { logTime, randomDelay, sendTelegramMessage, simulateTyping } from './utils';
+import { logTime, randomDelay } from './utils';
+import { TelegramService } from './services/telegram';
+import { AutofillService } from './services/autofill';
+import { ButtonObserver } from './observers';
 
-// Store extension state with Chrome storage API
-chrome.storage.local.get("enabled", (data) => {
-  if (!data.enabled) {
-    console.log("🚫 VFS Slot Checker is disabled.");
-    return;
+/**
+ * Main class for VFS Slot Checker functionality
+ */
+class SlotChecker {
+  private readonly telegramService: TelegramService;
+  private readonly autofillService: AutofillService;
+  private readonly buttonObserver: ButtonObserver;
+  private reloadTimeout: NodeJS.Timeout | null = null;
+  private isEnabled = false;
+
+  constructor() {
+    this.telegramService = new TelegramService();
+    this.autofillService = new AutofillService();
+    this.buttonObserver = new ButtonObserver();
   }
 
-  (async function main() {
-    // Prevent multiple instances
-    if (window.__vfsSlotCheckerLoaded) {
-      console.log("🚫 Script already loaded.");
+  /**
+   * Initialize the slot checker
+   */
+  public async init(): Promise<void> {
+    // Check if extension is enabled via Chrome storage
+    const data = await this.getStorageData("enabled");
+    this.isEnabled = !!data.enabled;
+
+    if (!this.isEnabled) {
+      logTime("🚫 VFS Slot Checker is disabled.");
       return;
     }
+
+    // Prevent multiple instances
+    if (window.__vfsSlotCheckerLoaded) {
+      logTime("🚫 Script already loaded.");
+      return;
+    }
+
     // Set global flag to indicate the script is loaded
-    (window as any).__vfsSlotCheckerLoaded = true;
+    window.__vfsSlotCheckerLoaded = true;
 
-    /**
-     * Attempts to find and click the "View Appointment Slots" button
-     */
-    function tryClickView(): void {
-      const btn = Array.from(document.querySelectorAll("button"))
-        .find(b => b.textContent?.includes("View Appointment Slots"));
-      if (btn) {
-        (btn as HTMLButtonElement).click();
-        logTime("🖱️ Clicked View Appointment Slots");
-      }
+    // Start the checker
+    await this.start();
+  }
+
+  /**
+   * Start the slot checking process
+   */
+  private async start(): Promise<void> {
+    try {
+      // Autofill credentials
+      await this.autofillService.autofillCredentials();
+
+      // Notify that the checker has started
+      await this.telegramService.sendMessage("✅ VFS slot checker started.");
+
+      // Set up button observers with MutationObserver
+      this.setupObservers();
+
+      // Schedule page reload to avoid session timeouts
+      this.schedulePageReload();
+
+      logTime("✅ Slot checker initialized successfully");
+    } catch (error) {
+      logTime(`❌ Error starting slot checker: ${error}`);
     }
+  }
 
-    /**
-     * Attempts to find and click the "Close" button
-     */
-    function tryClickClose(): void {
-      const btn = Array.from(document.querySelectorAll("button"))
-        .find(b => b.textContent?.trim() === "Close" && b.offsetParent !== null);
-      if (btn) {
-        setTimeout(() => {
-          (btn as HTMLButtonElement).click();
-          logTime("❌ Clicked Close button");
-        }, 3000);
-      }
-    }
+  /**
+   * Set up MutationObservers and fallback intervals
+   */
+  private setupObservers(): void {
+    // Set up button click observer
+    this.buttonObserver.observeViewButton(async () => {
+      // This callback runs when the View button is clicked
+      // Here you could add logic to detect if slots were found
+    });
 
-    /**
-     * Autofills login credentials for faster testing
-     */
-    async function autofillCredentials(): Promise<void> {
-      const start = Date.now();
-      while (Date.now() - start < 10000) {
-        const email = document.getElementById("email") as HTMLInputElement;
-        const pass = document.getElementById("password") as HTMLInputElement;
-        if (email && pass) {
-          await simulateTyping(email, APP_CONFIG.TEST_CREDENTIALS.EMAIL);
-          await simulateTyping(pass, APP_CONFIG.TEST_CREDENTIALS.PASSWORD);
-          break;
-        }
-        await new Promise(r => setTimeout(r, 500));
-      }
-    }
+    // Set up close button observer
+    this.buttonObserver.observeCloseButton();
 
-    // Autofill credentials and notify that the checker has started
-    await autofillCredentials();
-    await sendTelegramMessage("✅ VFS slot checker started.");
+    // Start periodic checks as fallback (less frequent than before)
+    this.buttonObserver.startPeriodicChecks(30000); // Check every 30 seconds as fallback
 
-    /**
-     * Schedules the next click on the View Appointments button
-     */
-    function scheduleViewClick(): void {
-      const delay = randomDelay(APP_CONFIG.CLICK_DELAY.MIN, APP_CONFIG.CLICK_DELAY.MAX);
-      logTime(`⏳ Waiting ${Math.round(delay / 1000)}s until next View click`);
-      setTimeout(() => {
-        try {
-          tryClickView();
-        } catch (err) {
-          console.error("Slot check error:", err);
-        }
-        scheduleViewClick();
-      }, delay);
-    }
+    // Schedule the first deliberate click with random delay
+    this.scheduleNextClick();
+  }
 
-    // Start the slot checking process
-    scheduleViewClick();
-    
-    // Regularly check for and close any modal dialogs
-    setInterval(tryClickClose, 5000);
+  /**
+   * Schedule the next deliberate button click
+   */
+  private scheduleNextClick(): void {
+    const delay = randomDelay(APP_CONFIG.CLICK_DELAY.MIN, APP_CONFIG.CLICK_DELAY.MAX);
+    logTime(`⏳ Scheduling next deliberate click in ${Math.round(delay / 1000)}s`);
 
-    // Reload the page periodically to avoid session timeouts
     setTimeout(() => {
-      logTime("♻️ Reloading...");
-      sendTelegramMessage("♻️ Reloading the page.");
+      if (!this.isEnabled) return;
+
+      try {
+        // Find and click view button manually
+        const btn = Array.from(document.querySelectorAll("button"))
+          .find(b => b.textContent?.includes("View Appointment Slots"));
+
+        if (btn) {
+          (btn as HTMLButtonElement).click();
+          logTime("🖱️ Clicked View Appointment Slots (scheduled)");
+        }
+      } catch (err) {
+        logTime(`❌ Error in scheduled click: ${err}`);
+      }
+
+      // Schedule the next click
+      this.scheduleNextClick();
+    }, delay);
+  }
+
+  /**
+   * Schedule page reload to prevent session timeouts
+   */
+  private schedulePageReload(): void {
+    this.reloadTimeout = setTimeout(async () => {
+      logTime("♻️ Reloading page...");
+      await this.telegramService.sendMessage("♻️ Reloading the page.");
       location.reload();
     }, APP_CONFIG.RELOAD_TIMEOUT);
-  })();
+  }
+
+  /**
+   * Clean up all resources when the checker is disabled
+   */
+  public cleanup(): void {
+    this.isEnabled = false;
+
+    // Clean up observers and intervals
+    this.buttonObserver.disconnect();
+
+    // Clear reload timeout
+    if (this.reloadTimeout) {
+      clearTimeout(this.reloadTimeout);
+      this.reloadTimeout = null;
+    }
+
+    logTime("🧹 Slot checker resources cleaned up");
+  }
+
+  /**
+   * Helper function to get Chrome storage data as a Promise
+   */
+  private getStorageData(key: string): Promise<any> {
+    return new Promise(resolve => {
+      chrome.storage.local.get(key, (data) => {
+        resolve(data);
+      });
+    });
+  }
+}
+
+// Initialize the slot checker when content script loads
+const slotChecker = new SlotChecker();
+slotChecker.init().catch(error => {
+  logTime(`❌ Error initializing slot checker: ${error}`);
+});
+
+// Listen for enable/disable messages
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message.type === "toggle-checker") {
+    if (message.enabled) {
+      slotChecker.init().then(() => sendResponse({ success: true }));
+    } else {
+      slotChecker.cleanup();
+      sendResponse({ success: true });
+    }
+    return true;
+  }
 });
